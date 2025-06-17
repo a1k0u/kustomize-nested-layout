@@ -2,6 +2,10 @@
 
 > Caution. Work in progress. Just proof of concept. Use at your own risk.
 
+Kustomize does not support nested overlays out of the box, see [this](https://github.com/kubernetes-sigs/kustomize/issues/851) and [this](https://github.com/kubernetes-sigs/kustomize/issues/596#issuecomment-447167930) issues. 
+
+This tool (script) just convert nested layout to supported layout by Kustomize and run `kustomize build` command.
+
 ### Layout
 
 Help to support layout with nested overlays without extra base directories.
