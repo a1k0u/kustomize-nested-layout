@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	// TODO: replace with vanilla os?
@@ -17,8 +18,9 @@ import (
 )
 
 var (
-	flagSourceDir = flag.String("source", "./kubernetes", "Path to the source directory with kustomize files")
-	flagBuildDir  = flag.String("build", "", "Path to the kustomize build")
+	flagRootDir       = flag.String("root", "", "Path to the root directory containing kustomization files")
+	flagBuildDir      = flag.String("build", "", "Path for the directory where kustomize build will be executed")
+	flagKustomizePath = flag.String("kustomize", "kustomize", "Path to the kustomize binary")
 )
 
 const (
@@ -29,45 +31,47 @@ const (
 func main() {
 	flag.Parse()
 
-	if *flagSourceDir == "" {
-		log.Fatal("Error: --source flag is required")
+	if *flagRootDir == "" {
+		log.Fatal("Error: --root flag is required")
 	}
 
 	if *flagBuildDir == "" {
 		log.Fatal("Error: --build flag is required")
 	}
 
-	sourceDir, err := filepath.Abs(*flagSourceDir)
+	if *flagKustomizePath == "" {
+		log.Fatal("Error: --kustomize flag is required")
+	}
+
+	rootDir, err := filepath.Abs(*flagRootDir)
 	if err != nil {
-		log.Fatalf("Error getting absolute path for source directory: %v", err)
+		log.Fatalf("Error: getting absolute path for root directory: %v", err)
 	}
 
-	outputDir := filepath.Join(sourceDir, LayoutDirName)
+	workDir := filepath.Join(rootDir, LayoutDirName)
 
-	log.Printf("Source directory: %s", sourceDir)
-	log.Printf("Output directory: %s", outputDir)
-
-	log.Printf("Cleaning up and creating output directory: %s", outputDir)
-	if err := os.RemoveAll(outputDir); err != nil {
-		log.Fatalf("Error removing existing output directory %s: %v", outputDir, err)
+	if err := os.RemoveAll(workDir); err != nil {
+		log.Fatalf("Error: removing existing work directory %s: %v", workDir, err)
 	}
 
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		log.Fatalf("Error creating output directory %s: %v", outputDir, err)
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		log.Fatalf("Error: creating work directory %s: %v", workDir, err)
 	}
+
+	log.Printf("Clean up and create work directory: %s", workDir)
 
 	opt := cp.Options{
 		Skip: func(info os.FileInfo, src, dest string) (bool, error) {
 			return strings.HasSuffix(src, LayoutDirName), nil
 		},
 	}
-	if err := cp.Copy(sourceDir, outputDir, opt); err != nil {
-		log.Fatalf("Error copying files from %s to %s: %v", sourceDir, outputDir, err)
+	if err := cp.Copy(rootDir, workDir, opt); err != nil {
+		log.Fatalf("Error: copying files from %s to %s: %v", rootDir, workDir, err)
 	}
 
-	log.Println("Files copied successfully.")
+	log.Println("Files copied successfully")
 
-	err = filepath.WalkDir(outputDir, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(workDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -80,14 +84,10 @@ func main() {
 			return nil
 		}
 
-		dest := filepath.Join(path, BaseDirName)
+		baseDir := filepath.Join(path, BaseDirName)
 
-		if err := os.RemoveAll(dest); err != nil {
-			return fmt.Errorf("failed to remove existing .base directory at %s: %w", dest, err)
-		}
-
-		if err := os.MkdirAll(dest, 0755); err != nil {
-			return fmt.Errorf("failed to create %s directory at %s: %w", BaseDirName, dest, err)
+		if err := os.MkdirAll(baseDir, 0755); err != nil {
+			return fmt.Errorf("failed to create base directory %s: %w", baseDir, err)
 		}
 
 		files, err := os.ReadDir(path)
@@ -100,34 +100,28 @@ func main() {
 				continue
 			}
 
-			if strings.HasSuffix(file.Name(), ".yaml") || strings.HasSuffix(file.Name(), ".yml") {
-				srcFilePath := filepath.Join(path, file.Name())
-				destFilePath := filepath.Join(dest, file.Name())
+			srcFilePath := filepath.Join(path, file.Name())
+			destFilePath := filepath.Join(baseDir, file.Name())
 
-				if err := os.Rename(srcFilePath, destFilePath); err != nil {
-					return fmt.Errorf("failed to move file %s to %s: %w", srcFilePath, destFilePath, err)
-				}
+			if err := os.Rename(srcFilePath, destFilePath); err != nil {
+				return fmt.Errorf("failed to move file %s to %s: %w", srcFilePath, destFilePath, err)
 			}
 		}
 
 		return nil
 	})
 	if err != nil {
-		log.Fatalf("Error during directory walk: %v", err)
+		log.Fatalf("Error: during directory walk: %v", err)
 	}
-	log.Println("YAML movement phase completed.")
 
-	log.Println("Updating kustomization.yaml files...")
-	err = filepath.WalkDir(outputDir, func(path string, d fs.DirEntry, err error) error {
+	log.Println("YAML files moved to base directories successfully")
+
+	err = filepath.WalkDir(workDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
-		if d.IsDir() {
-			return nil
-		}
-
-		if d.Name() != "kustomization.yaml" && d.Name() != "kustomization.yml" {
+		if !IsKustomizationFile(d) {
 			return nil
 		}
 
@@ -142,9 +136,10 @@ func main() {
 		}
 
 		for i, resource := range kustomization.Resources {
-			if resource == "../" {
-				kustomization.Resources[i] = filepath.Join("..", "..", BaseDirName)
+			if !IsDotsPath(resource) {
+				continue
 			}
+			kustomization.Resources[i] = filepath.Join(resource, "..", BaseDirName)
 		}
 
 		updatedContent, err := yaml.Marshal(&kustomization)
@@ -159,46 +154,64 @@ func main() {
 		return nil
 	})
 	if err != nil {
-		log.Fatalf("Error updating kustomization files: %v", err)
+		log.Fatalf("Error: updating kustomization files: %v", err)
 	}
-	log.Println("Kustomization files updated successfully.")
+
+	log.Println("Kustomization files updated successfully")
 
 	buildDir, err := filepath.Abs(*flagBuildDir)
 	if err != nil {
-		log.Fatalf("Error getting absolute path for build directory: %v", err)
+		log.Fatalf("Error: getting absolute path for build directory: %v", err)
 	}
 
-	isSub, relPath, err := SubElem(sourceDir, buildDir)
+	isSub, buildPath, err := SubElem(rootDir, buildDir)
 	if err != nil {
-		log.Fatalf("Error checking if build directory is a subdirectory of source directory: %v", err)
+		log.Fatalf("Error: checking if build directory is a subdirectory of source directory: %v", err)
 	}
 	if !isSub {
-		log.Fatalf("Error: build directory %s is not a subdirectory of source directory %s", buildDir, sourceDir)
+		log.Fatalf("Error: build directory %s is not a subdirectory of root directory %s", buildDir, rootDir)
 	}
 
-	kustomizeRealDir := filepath.Join(outputDir, relPath, BaseDirName)
-	log.Printf("Kustomize real directory: %s", kustomizeRealDir)
+	workBuildDir := filepath.Join(workDir, buildPath, BaseDirName)
 
-	cmd := exec.Command("kustomize", "build", kustomizeRealDir)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Fatalf("Error running kustomize build: %v", err)
+	cmd := exec.Command(*flagKustomizePath, "build", workBuildDir)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Fatalf("Error: running kustomize build: %v", err)
 	}
-	log.Println("Kustomize build output:")
-	log.Println("------------------------------------")
+}
 
-	log.Println(string(output))
+func IsKustomizationFile(file fs.DirEntry) bool {
+	if file.IsDir() {
+		return false
+	}
+
+	return slices.Contains([]string{"kustomization.yaml", "kustomization.yml", "Kustomization"}, file.Name())
+}
+
+func IsDotsPath(path string) bool {
+	isDotsPath := true
+	for _, part := range strings.Split(path, string(filepath.Separator)) {
+		if part != ".." && part != "." && part != "" {
+			isDotsPath = false
+			break
+		}
+	}
+	return isDotsPath
 }
 
 func SubElem(parent, sub string) (bool, string, error) {
-	up := ".." + string(os.PathSeparator)
+	up := ".." + string(filepath.Separator)
 
 	rel, err := filepath.Rel(parent, sub)
 	if err != nil {
 		return false, "", err
 	}
+
 	if !strings.HasPrefix(rel, up) && rel != ".." {
 		return true, rel, nil
 	}
+
 	return false, "", nil
 }
