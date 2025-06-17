@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strings"
 
-	// TODO: replace with vanilla os?
 	cp "github.com/otiai10/copy"
 	"gopkg.in/yaml.v3"
 	"sigs.k8s.io/kustomize/api/types"
@@ -23,6 +22,7 @@ var (
 	flagKustomizePath = flag.String("kustomize", "kustomize", "Path to the kustomize binary")
 
 	flagGenerateResources = flag.Bool("generate-resources", false, "Generate resources fields in kustomization.yaml files if they are empty, if no file exists, it will be created")
+	flagGeneratePatches   = flag.Bool("generate-patches", false, "Generate patches fields in kustomization.yaml files if they are empty with YAML files from the same directory")
 )
 
 const (
@@ -165,24 +165,35 @@ func main() {
 			if nearestParentRelPath != "" {
 				kustomization.Resources = append(kustomization.Resources, nearestParentRelPath)
 			} else {
-				files, err := os.ReadDir(kustomizationDir)
+				yamlFiles, err := GetYamlExceptKustomization(kustomizationDir)
 				if err != nil {
-					return fmt.Errorf("failed to read directory %s: %w", kustomizationDir, err)
+					return fmt.Errorf("failed to get YAML files from directory %s: %w", kustomizationDir, err)
 				}
 
-				for _, file := range files {
-					if IsYamlFile(file) && !IsKustomizationFile(file) {
-						kustomization.Resources = append(kustomization.Resources, file.Name())
-					}
-				}
+				kustomization.Resources = append(kustomization.Resources, yamlFiles...)
 			}
 		}
 
+		isRootKustomization := true
 		for i, resource := range kustomization.Resources {
 			if !IsDotsPath(resource) {
 				continue
 			}
+			isRootKustomization = false
 			kustomization.Resources[i] = filepath.Join(resource, "..", BaseDirName)
+		}
+
+		if *flagGeneratePatches && len(kustomization.Patches) == 0 && !isRootKustomization {
+			yamlFiles, err := GetYamlExceptKustomization(filepath.Dir(path))
+			if err != nil {
+				return fmt.Errorf("failed to get YAML files from directory %s: %w", filepath.Dir(path), err)
+			}
+
+			for _, yamlFile := range yamlFiles {
+				kustomization.Patches = append(kustomization.Patches, types.Patch{
+					Path: yamlFile,
+				})
+			}
 		}
 
 		updatedContent, err := yaml.Marshal(&kustomization)
@@ -250,6 +261,23 @@ func IsDotsPath(path string) bool {
 		}
 	}
 	return isDotsPath
+}
+
+func GetYamlExceptKustomization(path string) ([]string, error) {
+	files, err := os.ReadDir(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read directory %s: %w", path, err)
+	}
+
+	yamlFiles := make([]string, 0)
+
+	for _, file := range files {
+		if IsYamlFile(file) && !IsKustomizationFile(file) {
+			yamlFiles = append(yamlFiles, file.Name())
+		}
+	}
+
+	return yamlFiles, nil
 }
 
 func ContainsYamls(files []fs.DirEntry) bool {
