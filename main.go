@@ -21,6 +21,8 @@ var (
 	flagRootDir       = flag.String("root", "", "Path to the root directory containing kustomization files")
 	flagBuildDir      = flag.String("build", "", "Path for the directory where kustomize build will be executed")
 	flagKustomizePath = flag.String("kustomize", "kustomize", "Path to the kustomize binary")
+
+	flagGenerateResources = flag.Bool("generate-resources", false, "Generate resources fields in kustomization.yaml files if they are empty, if no file exists, it will be created")
 )
 
 const (
@@ -71,6 +73,7 @@ func main() {
 
 	log.Println("Files copied successfully")
 
+	kustomizationFilesPaths := make([]string, 0)
 	err = filepath.WalkDir(workDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -95,16 +98,31 @@ func main() {
 			return fmt.Errorf("failed to read directory %s: %w", path, err)
 		}
 
+		if *flagGenerateResources && !ContainsKustomization(files) {
+			if err := CreateKustomizationFile(path); err != nil {
+				return fmt.Errorf("failed to create kustomization file in %s: %w", path, err)
+			}
+
+			files, err = os.ReadDir(path)
+			if err != nil {
+				return fmt.Errorf("failed to read directory %s after creating kustomization file: %w", path, err)
+			}
+		}
+
 		for _, file := range files {
 			if file.IsDir() {
 				continue
 			}
 
-			srcFilePath := filepath.Join(path, file.Name())
-			destFilePath := filepath.Join(baseDir, file.Name())
+			src := filepath.Join(path, file.Name())
+			dst := filepath.Join(baseDir, file.Name())
 
-			if err := os.Rename(srcFilePath, destFilePath); err != nil {
-				return fmt.Errorf("failed to move file %s to %s: %w", srcFilePath, destFilePath, err)
+			if IsKustomizationFile(file) {
+				kustomizationFilesPaths = append(kustomizationFilesPaths, path)
+			}
+
+			if err := os.Rename(src, dst); err != nil {
+				return fmt.Errorf("failed to move file %s to %s: %w", src, dst, err)
 			}
 		}
 
@@ -133,6 +151,31 @@ func main() {
 		var kustomization types.Kustomization
 		if err := yaml.Unmarshal(content, &kustomization); err != nil {
 			return fmt.Errorf("failed to unmarshal kustomization file %s: %w", path, err)
+		}
+
+		if *flagGenerateResources && len(kustomization.Resources) == 0 {
+			kustomizationDir := filepath.Dir(path)
+
+			dirWithoutBase := filepath.Dir(kustomizationDir)
+			nearestParentRelPath, err := FindRelPathToNearestParent(dirWithoutBase, kustomizationFilesPaths)
+			if err != nil {
+				return fmt.Errorf("failed to find nearest parent path for %s in %v: %w", dirWithoutBase, kustomizationFilesPaths, err)
+			}
+
+			if nearestParentRelPath != "" {
+				kustomization.Resources = append(kustomization.Resources, nearestParentRelPath)
+			} else {
+				files, err := os.ReadDir(kustomizationDir)
+				if err != nil {
+					return fmt.Errorf("failed to read directory %s: %w", kustomizationDir, err)
+				}
+
+				for _, file := range files {
+					if IsYamlFile(file) && !IsKustomizationFile(file) {
+						kustomization.Resources = append(kustomization.Resources, file.Name())
+					}
+				}
+			}
 		}
 
 		for i, resource := range kustomization.Resources {
@@ -182,6 +225,14 @@ func main() {
 	}
 }
 
+func IsYamlFile(file fs.DirEntry) bool {
+	if file.IsDir() {
+		return false
+	}
+
+	return strings.HasSuffix(file.Name(), ".yaml") || strings.HasSuffix(file.Name(), ".yml")
+}
+
 func IsKustomizationFile(file fs.DirEntry) bool {
 	if file.IsDir() {
 		return false
@@ -201,6 +252,38 @@ func IsDotsPath(path string) bool {
 	return isDotsPath
 }
 
+func ContainsYamls(files []fs.DirEntry) bool {
+	return slices.ContainsFunc(files, func(file fs.DirEntry) bool {
+		return IsYamlFile(file)
+	})
+}
+
+func ContainsKustomization(files []fs.DirEntry) bool {
+	return slices.ContainsFunc(files, func(file fs.DirEntry) bool {
+		return IsKustomizationFile(file)
+	})
+}
+
+func CreateKustomizationFile(path string) error {
+	kustomization := &types.Kustomization{
+		TypeMeta: types.TypeMeta{
+			APIVersion: types.KustomizationVersion,
+			Kind:       types.KustomizationKind,
+		},
+	}
+
+	content, err := yaml.Marshal(kustomization)
+	if err != nil {
+		return fmt.Errorf("failed to marshal kustomization file: %w", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(path, "kustomization.yaml"), content, 0644); err != nil {
+		return fmt.Errorf("failed to write kustomization file %s: %w", path, err)
+	}
+
+	return nil
+}
+
 func SubElem(parent, sub string) (bool, string, error) {
 	up := ".." + string(filepath.Separator)
 
@@ -214,4 +297,32 @@ func SubElem(parent, sub string) (bool, string, error) {
 	}
 
 	return false, "", nil
+}
+
+func FindRelPathToNearestParent(child string, parents []string) (string, error) {
+	if child == "" || len(parents) == 0 {
+		return "", fmt.Errorf("path and paths must not be empty")
+	}
+
+	nearestParentRelPath := ""
+	for _, p := range parents {
+		if p == child {
+			continue
+		}
+
+		if !strings.HasPrefix(child, p) {
+			continue
+		}
+
+		parentRelPath, err := filepath.Rel(child, p)
+		if err != nil {
+			return "", fmt.Errorf("failed to get relative path: %w", err)
+		}
+
+		if nearestParentRelPath == "" || len(parentRelPath) < len(nearestParentRelPath) {
+			nearestParentRelPath = parentRelPath
+		}
+	}
+
+	return nearestParentRelPath, nil
 }
