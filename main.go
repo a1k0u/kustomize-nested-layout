@@ -6,9 +6,11 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
+	// TODO: replace with vanilla os?
 	cp "github.com/otiai10/copy"
 	"gopkg.in/yaml.v3"
 	"sigs.k8s.io/kustomize/api/types"
@@ -16,6 +18,7 @@ import (
 
 var (
 	flagSourceDir = flag.String("source", "./kubernetes", "Path to the source directory with kustomize files")
+	flagBuildDir  = flag.String("build", "", "Path to the kustomize build")
 )
 
 const (
@@ -30,13 +33,13 @@ func main() {
 		log.Fatal("Error: --source flag is required")
 	}
 
+	if *flagBuildDir == "" {
+		log.Fatal("Error: --build flag is required")
+	}
+
 	sourceDir, err := filepath.Abs(*flagSourceDir)
 	if err != nil {
 		log.Fatalf("Error getting absolute path for source directory: %v", err)
-	}
-
-	if _, err := os.Stat(sourceDir); os.IsNotExist(err) {
-		log.Fatalf("Error: Source directory %s does not exist", sourceDir)
 	}
 
 	outputDir := filepath.Join(sourceDir, LayoutDirName)
@@ -155,4 +158,47 @@ func main() {
 
 		return nil
 	})
+	if err != nil {
+		log.Fatalf("Error updating kustomization files: %v", err)
+	}
+	log.Println("Kustomization files updated successfully.")
+
+	buildDir, err := filepath.Abs(*flagBuildDir)
+	if err != nil {
+		log.Fatalf("Error getting absolute path for build directory: %v", err)
+	}
+
+	isSub, relPath, err := SubElem(sourceDir, buildDir)
+	if err != nil {
+		log.Fatalf("Error checking if build directory is a subdirectory of source directory: %v", err)
+	}
+	if !isSub {
+		log.Fatalf("Error: build directory %s is not a subdirectory of source directory %s", buildDir, sourceDir)
+	}
+
+	kustomizeRealDir := filepath.Join(outputDir, relPath, BaseDirName)
+	log.Printf("Kustomize real directory: %s", kustomizeRealDir)
+
+	cmd := exec.Command("kustomize", "build", kustomizeRealDir)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Fatalf("Error running kustomize build: %v", err)
+	}
+	log.Println("Kustomize build output:")
+	log.Println("------------------------------------")
+
+	log.Println(string(output))
+}
+
+func SubElem(parent, sub string) (bool, string, error) {
+	up := ".." + string(os.PathSeparator)
+
+	rel, err := filepath.Rel(parent, sub)
+	if err != nil {
+		return false, "", err
+	}
+	if !strings.HasPrefix(rel, up) && rel != ".." {
+		return true, rel, nil
+	}
+	return false, "", nil
 }
