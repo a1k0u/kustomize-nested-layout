@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: application
+  namespace: ns
+spec:
+  selector:
+    matchLabels:
+      app: application
+  template:
+    spec:
+      containers:
+      - name: application
+        env:
+        - name: DEV_SOME_ENV
+          value: DEV_SOME_VALUE
+        resources:
+          limits:
+            cpu: 500m
+            memory: 650Mi
+          requests:
+            cpu: "500m"
+            memory: 650Mi

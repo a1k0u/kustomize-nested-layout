@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../
+
+nameSuffix: -update-name
+namespace: new-ns
+
+labels:
+- includeSelectors: true
+  pairs:
+    beta: "true"
+
+commonAnnotations:
+  branch: "branch"
+  build: "1"
+  ttl: "100"
+  
+patches:
+- patch: |-
+    - op: replace
+      path: /spec/rules/0/host
+      value: some-new-domain.example.com
+  target:
+    kind: Ingress
+    name: application

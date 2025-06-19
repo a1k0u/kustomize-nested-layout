@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: application
+  name: application
+  namespace: ns
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: application
+  template:
+    metadata:
+      labels:
+        app: application
+    spec:
+      containers:
+      - env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        image: nginx
+        name: application
+        ports:
+          - containerPort: 8080
+            name: http
+            protocol: TCP
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 1500Mi
+          requests:
+            cpu: "1"
+            memory: 1500Mi
+
+---
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  labels:
+    app: application
+  name: application
+  namespace: ns
+spec:
+  maxUnavailable: 35%
+  selector:
+    matchLabels:
+      app: application

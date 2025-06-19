@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: application
+  namespace: ns
+spec:
+  selector:
+    matchLabels:
+      app: application
+  template:
+    spec:
+      containers:
+      - name: application
+        env:
+        - name: MY_ENV
+          value: MY_VALUE

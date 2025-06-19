@@ -40,7 +40,8 @@ kubernetes
 
 Build `kubernetes/development/betas` with kustomize:
 ```
-go run main.go --root kubernetes --build kubernetes/development/betas
+DIR=examples/kubernetes-nested-structure
+go run main.go --root $DIR --build $DIR/development/betas
 ```
 
 ### Generation
@@ -77,5 +78,9 @@ Otherwise, it will be inherited from nearest parent kustomization.
 If it is not root kustomization, it will generate `patches` field with YAML files from the same directory.
 
 ```
-go run main.go --root kubernetes --build kubernetes/production/cron-cluster --generate-resources --generate-patches
+DIR=examples/kubernetes-no-kustomization-files
+go run main.go --root $DIR \
+    --build $DIR/production/cluster-name/us-east-2 \
+    --generate-resources \
+    --generate-patches
 ```
